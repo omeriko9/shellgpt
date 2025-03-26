@@ -182,4 +182,4 @@ if __name__ == "__main__":
     require_confirmation = not args.no_confirm
 
     import uvicorn
-    uvicorn.run("shell_agent:app", host="0.0.0.0", port=11000, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=11000, reload=False)
