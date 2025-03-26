@@ -107,8 +107,7 @@ You should now be able to test the custom GPT with your shellgpt agent successfu
 
 🔐 Notes & Caveats
 * You will see a “Confirm access to [YOUR_URL]” prompt when the GPT first talks to your agent — this is normal OpenAI sandbox behavior.
-* All command executions are locally confirmed (you decide to run or decline).
-* No commands run automatically unless you approve them via the terminal.
+* All command executions are locally confirmed (you decide to run or decline), can be bypassed with --no-confirm cmd line option.
 
 📦 Future Ideas
 * Persistent working directory across steps
