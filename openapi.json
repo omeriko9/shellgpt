@@ -1,0 +1,168 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "run_shell_command",
+    "description": "Run shell commands on the user's machine. Supports short-lived and long-running commands.",
+    "version": "v1.1.0"
+  },
+  "servers": [
+    {
+      "url": "http://[YOUR_URL]/gpt-shell"
+    }
+  ],
+  "paths": {
+    "/run": {
+      "post": {
+        "operationId": "runShellCommand",
+        "summary": "Run a shell command (blocking)",
+        "description": "Executes the provided shell command and waits for it to finish.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "command": {
+                    "type": "string",
+                    "description": "The shell command to execute"
+                  },
+                  "stdin": {
+                    "type": "string",
+                    "description": "Optional input to send to the command's stdin"
+                  }
+                },
+                "required": ["command"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Command executed successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "stdout": { "type": "string" },
+                    "stderr": { "type": "string" },
+                    "exit_code": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/start": {
+      "post": {
+        "operationId": "startShellCommand",
+        "summary": "Start a long-running shell command",
+        "description": "Starts a shell command that may run indefinitely. Returns an ID you can use to fetch output later.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "command": {
+                    "type": "string",
+                    "description": "The shell command to start"
+                  },
+                  "stdin": {
+                    "type": "string",
+                    "description": "Optional input to send to stdin"
+                  }
+                },
+                "required": ["command"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Command started successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "An ID representing the started process"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/output/{id}": {
+      "get": {
+        "operationId": "getShellOutput",
+        "summary": "Fetch output from a long-running command",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current stdout/stderr of the command.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "stdout": { "type": "string" },
+                    "stderr": { "type": "string" },
+                    "running": { "type": "boolean" },
+                    "exit_code": { "type": ["integer", "null"] }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/kill/{id}": {
+      "post": {
+        "operationId": "killShellCommand",
+        "summary": "Kill a long-running shell command",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Command was terminated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": { "type": "string" },
+                    "exit_code": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
