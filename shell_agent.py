@@ -27,7 +27,7 @@ async def run_command(payload: ShellCommand):
     print(f"\n[RUN] Received command:\n{cmd}")
 
     if require_confirmation:
-        print("Confirm execution? [Y/n] ", end="")
+        print("Confirm execution? [Y/n] ")
         answer = sys.stdin.readline().strip().lower()
         if answer and answer != "y":
             print("Command declined by user.")
@@ -96,7 +96,7 @@ async def start_command(payload: ShellCommand):
     print(f"\n[START] Launching background process:\n{cmd}\n🆔 ID: {proc_id}")
 
     if require_confirmation:
-        print("Confirm background execution? [Y/n] ", end="")
+        print("Confirm background execution? [Y/n] ")
         answer = sys.stdin.readline().strip().lower()
         if answer and answer != "y":
             print("Background process declined by user.")
