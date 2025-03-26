@@ -163,27 +163,126 @@
           }
         }
       }
+    },  
+    "/interactive/start": {
+      "post": {
+        "operationId": "interactiveStart",
+        "summary": "Start an interactive session (PTY)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "cmd": {
+                    "type": "string",
+                    "description": "Command to run interactively (default bash)."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Session started successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "session_id": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     },
-    "/ws/terminal": {
+    "/interactive/output/{session_id}": {
       "get": {
-        "operationId": "terminalSession",
-        "summary": "Establish an interactive terminal session",
-        "description": "Opens a WebSocket connection that provides a full interactive TTY session. Use this endpoint for commands that require interactivity (e.g. a shell inside a container or VM).",
+        "operationId": "interactiveOutput",
+        "summary": "Fetch any new output from the interactive session",
         "parameters": [
           {
-            "name": "cmd",
-            "in": "query",
-            "required": false,
-            "schema": { "type": "string" },
-            "description": "The command to run interactively (default is 'bash')"
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
           }
         ],
         "responses": {
-          "101": {
-            "description": "Switching Protocols. An interactive TTY session has been established."
+          "200": {
+            "description": "Current chunk of session output.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "output": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/interactive/input/{session_id}": {
+      "post": {
+        "operationId": "interactiveInput",
+        "summary": "Send input to the interactive session",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "input": {
+                    "type": "string",
+                    "description": "Text to send as session input"
+                  }
+                },
+                "required": ["input"]
+              }
+            }
           }
         },
-        "x-websocket": true
+        "responses": {
+          "200": {
+            "description": "Input accepted."
+          }
+        }
+      }
+    },
+    "/interactive/kill/{session_id}": {
+      "post": {
+        "operationId": "interactiveKill",
+        "summary": "Terminate an interactive session",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session terminated"
+          }
+        }
       }
     }
   }
