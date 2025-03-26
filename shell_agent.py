@@ -125,8 +125,8 @@ async def start_command(payload: ShellCommand):
             print(f"{label} [{proc_id}]: {decoded.strip()}")
             buffer.append(decoded)
 
-    asyncio.create_task(stream_output(process.stdout, stdout_buffer, "▶️ STDOUT"))
-    asyncio.create_task(stream_output(process.stderr, stderr_buffer, "⚠️ STDERR"))
+    asyncio.create_task(stream_output(process.stdout, stdout_buffer, "STDOUT"))
+    asyncio.create_task(stream_output(process.stderr, stderr_buffer, "STDERR"))
 
     processes[proc_id] = {
         "process": process,
