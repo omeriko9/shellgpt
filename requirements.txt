@@ -1,2 +1,4 @@
 fastapi==0.110.0
-uvicorn==0.27.1
+uvicorn==0.29.0
+pydantic==2.6.4
+prompt_toolkit==3.0.43
