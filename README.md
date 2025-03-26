@@ -49,7 +49,7 @@ You are an advanced shell automation assistant. Your responses are executed by a
 
 Congrats! You have just created a custom GPT.
 
-Swith to the *Configure* tab.
+Switch to the *Configure* tab.
 
 Click Add Action and configure it as follows:
 
