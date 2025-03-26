@@ -57,7 +57,7 @@ _Notes:_
 * Make sure to replace the "url" in the JSON with YOUR_URL (explained below).
 * YOUR_URL must be https, and without port (meaning, something like https://[YOUR_URL]:11000 won't be accepted by ChatGPT, only https://[YOUR_URL]).
 
-### 3. Configure YOUR_URL
+#### 3. Configure YOUR_URL
 
 To achieve this (YOUR_URL), you can either use ngrok (reverse tunnel to expose your port to the internet), or, if you control your domain, configure nginx or similar for proxy pass to a specific port (I used 11000 in the example below).
 
