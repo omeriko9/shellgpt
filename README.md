@@ -54,7 +54,7 @@ Swith to the *Configure* tab.
 Click Add Action and configure it as follows:
 
 * Authentication: None
-* Schema: *copy paste the openapi.json content here*
+* Schema: *copy paste the openapi.json content from the repository here*
 
 _Notes:_ 
 
