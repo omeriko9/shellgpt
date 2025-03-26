@@ -50,7 +50,7 @@ You are an advanced shell automation assistant. Your responses are executed by a
 Click Add Action and configure it as follows:
 
 * Authentication: None
-* Schema: *copy paste the openai.json content here*
+* Schema: *copy paste the openapi.json content here*
 
 _Notes:_ 
 
@@ -79,7 +79,7 @@ Then, use the generated https://xxxxxx.ngrok.io URL as YOUR_URL.
 
 ```
 git clone https://github.com/omeriko9/shellgpt.git
-cd shell-automation-assistant
+cd shellgpt
 ```
 
 #### 2. Create a virtual environment and install dependencies
