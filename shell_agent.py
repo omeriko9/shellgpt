@@ -2,34 +2,32 @@ import os
 import socket
 import getpass
 import sys
+import pty
 import asyncio
 import uuid
 import json
 import argparse
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 from pydantic import BaseModel
 import uvicorn
 
-# prompt_toolkit imports for ANSI support and interactive prompt
+# prompt_toolkit imports for ANSI support and interactive shell
 from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.application.current import get_app
 
 app = FastAPI(root_path="/gpt-shell")
 
-# Global flags (set from command-line arguments)
-quiet_mode = True   # Default True: suppress uvicorn web messages
+# Global flags and variables
+quiet_mode = True        # Default True: suppress uvicorn web messages
 require_confirmation = True
-
-# Global interactive shell session reference.
-global_shell_session = None
+global_shell_session = None  # For the local interactive shell
 
 # ANSI color definitions
 COLOR_WHITE = "\033[97m"    # bright white for (sgpt)
 COLOR_RESET = "\033[0m"
-# ANSI true color for remote command text (approximate #df9bff)
-REMOTE_COLOR = "\033[38;2;223;155;255m"
+REMOTE_COLOR = "\033[38;2;223;155;255m"  # approx. #df9bff
 
 def get_prompt_text():
     """Generate the prompt text with ANSI escape codes."""
@@ -53,25 +51,22 @@ def force_ls_color(cmd: str) -> str:
         return " ".join(parts)
     return cmd
 
-def my_run_in_terminal(func):
+def is_interactive(cmd: str) -> bool:
     """
-    Try to run func in the terminal using get_app().run_in_terminal if available;
-    otherwise, simply call func.
+    A simple check to see if the command appears interactive.
+    For example, commands with "-it" are considered interactive.
     """
-    app_obj = get_app()
-    if hasattr(app_obj, "run_in_terminal"):
-        return app_obj.run_in_terminal(func)
-    else:
-        return func()
+    return "-it" in cmd or cmd.strip() in {"bash", "sh"}
 
-# ---------- Interactive Shell Loop using prompt_toolkit ----------
+# ------------------------------
+# Local Interactive Shell
+# ------------------------------
 async def interactive_shell():
     global global_shell_session
     session = PromptSession()
     global_shell_session = session
     while True:
         try:
-            # Use get_prompt() so ANSI formatting is applied.
             user_input = await session.prompt_async(message=get_prompt)
         except (EOFError, KeyboardInterrupt):
             print("Exiting SGPT shell.")
@@ -82,7 +77,10 @@ async def interactive_shell():
         if user_input.lower() == "exit":
             print("Exiting SGPT shell.")
             os._exit(0)
-        # Force ls to show colors if applicable.
+        # Disallow interactive commands here:
+        if is_interactive(user_input):
+            print("Interactive commands are not supported via this local shell. Use the interactive session endpoints.")
+            continue
         user_input = force_ls_color(user_input)
         try:
             process = await asyncio.create_subprocess_shell(
@@ -105,30 +103,32 @@ async def interactive_shell():
         except Exception as e:
             print(f"[sgpt] Error executing command: {e}")
 
-# ---------- FastAPI Models and Endpoints ----------
+# ------------------------------
+# HTTP Endpoints for One-Shot Commands
+# ------------------------------
 class ShellCommand(BaseModel):
     command: str
     stdin: str = ""
 
-# Track running background processes by UUID
 processes = {}
 
 @app.post("/run")
 async def run_command(payload: ShellCommand):
     cmd = payload.command.strip()
+    if is_interactive(cmd):
+        return {
+            "stdout": "",
+            "stderr": "Interactive commands require an interactive session. Use the /interactive endpoints.",
+            "exit_code": -1
+        }
     cmd = force_ls_color(cmd)
-    # Print remote command on a new line in the chosen remote color.
     print_formatted_text(ANSI(f"\n{REMOTE_COLOR}{cmd}{COLOR_RESET}"))
     if require_confirmation:
         print("Confirm execution? [Y/n] ")
         answer = sys.stdin.readline().strip().lower()
         if answer and answer != "y":
             print("Command declined by user.")
-            return {
-                "stdout": "",
-                "stderr": "Command execution declined by user.",
-                "exit_code": -1
-            }
+            return {"stdout": "", "stderr": "Command execution declined by user.", "exit_code": -1}
     try:
         process = await asyncio.create_subprocess_shell(
             cmd,
@@ -155,31 +155,18 @@ async def run_command(payload: ShellCommand):
             read_stream(process.stderr, stderr_data)
         )
         exit_code = await process.wait()
-        # After remote command execution, force a refresh of the interactive prompt.
-        if global_shell_session is not None:
-            my_run_in_terminal(lambda: print(get_prompt_text(), end='', flush=True))
-            if hasattr(get_app(), "invalidate"):
-                get_app().invalidate()
-        return {
-            "stdout": "".join(stdout_data),
-            "stderr": "".join(stderr_data),
-            "exit_code": exit_code
-        }
+        print("\n" + get_prompt_text(), end='', flush=True)
+        return {"stdout": "".join(stdout_data), "stderr": "".join(stderr_data), "exit_code": exit_code}
     except Exception as e:
         print(f"[sgpt] Exception during /run: {e}")
-        if global_shell_session is not None:
-            my_run_in_terminal(lambda: print(get_prompt_text(), end='', flush=True))
-            if hasattr(get_app(), "invalidate"):
-                get_app().invalidate()
-        return {
-            "stdout": "",
-            "stderr": str(e),
-            "exit_code": -1
-        }
+        print("\n" + get_prompt_text(), end='', flush=True)
+        return {"stdout": "", "stderr": str(e), "exit_code": -1}
 
 @app.post("/start")
 async def start_command(payload: ShellCommand):
     cmd = payload.command.strip()
+    if is_interactive(cmd):
+        return {"stdout": "", "stderr": "Interactive commands require an interactive session. Use the /interactive endpoints.", "exit_code": -1}
     cmd = force_ls_color(cmd)
     stdin_input = payload.stdin
     proc_id = str(uuid.uuid4())
@@ -212,16 +199,12 @@ async def start_command(payload: ShellCommand):
             buffer.append(decoded)
     asyncio.create_task(stream_output(process.stdout, stdout_buffer, "STDOUT"))
     asyncio.create_task(stream_output(process.stderr, stderr_buffer, "STDERR"))
-    processes[proc_id] = {
-        "process": process,
-        "stdout": stdout_buffer,
-        "stderr": stderr_buffer,
-    }
-    return { "id": proc_id }
+    processes[proc_id] = {"process": process, "stdout": stdout_buffer, "stderr": stderr_buffer}
+    return {"id": proc_id}
 
-@app.get("/output/{proc_id}")
-async def get_output(proc_id: str):
-    proc = processes.get(proc_id)
+@app.get("/output/{id}")
+async def get_output(id: str):
+    proc = processes.get(id)
     if not proc:
         raise HTTPException(status_code=404, detail="Process not found")
     return {
@@ -231,23 +214,118 @@ async def get_output(proc_id: str):
         "exit_code": proc["process"].returncode
     }
 
-@app.post("/kill/{proc_id}")
-async def kill_process(proc_id: str):
-    proc = processes.get(proc_id)
+@app.post("/kill/{id}")
+async def kill_process(id: str):
+    proc = processes.get(id)
     if not proc:
         raise HTTPException(status_code=404, detail="Process not found")
     proc["process"].terminate()
     await proc["process"].wait()
-    return {
-        "message": f"Process {proc_id} terminated.",
-        "exit_code": proc["process"].returncode
-    }
+    return {"message": f"Process {id} terminated.", "exit_code": proc["process"].returncode}
 
 @app.get("/openapi.json")
 async def get_openapi():
     with open("openapi.json", "r") as f:
         return json.load(f)
 
+# ------------------------------
+# Interactive Session Management (HTTP Polling)
+# ------------------------------
+
+# In-memory store for interactive sessions.
+interactive_sessions = {}
+
+class InteractiveSession:
+    def __init__(self, session_id: str, master_fd: int, pid: int):
+        self.session_id = session_id
+        self.master_fd = master_fd
+        self.pid = pid
+        self.output_buffer = ""
+        self._lock = asyncio.Lock()
+        self._read_task = asyncio.create_task(self._read_loop())
+
+    async def _read_loop(self):
+        loop = asyncio.get_event_loop()
+        while True:
+            try:
+                data = await loop.run_in_executor(None, os.read, self.master_fd, 1024)
+                if not data:
+                    break
+                async with self._lock:
+                    self.output_buffer += data.decode(errors="ignore")
+            except Exception:
+                break
+
+    async def get_output(self) -> str:
+        async with self._lock:
+            out = self.output_buffer
+            self.output_buffer = ""
+            return out
+
+    def write_input(self, input_str: str):
+        os.write(self.master_fd, input_str.encode())
+
+    def kill(self):
+        try:
+            os.kill(self.pid, 9)
+        except Exception:
+            pass
+        os.close(self.master_fd)
+        self._read_task.cancel()
+
+@app.post("/interactive/start")
+async def interactive_start(request: Request):
+    """
+    Start an interactive session. JSON body can include:
+    { "cmd": "bash" }
+    If not provided, defaults to bash.
+    Returns a session_id.
+    """
+    data = await request.json()
+    cmd = data.get("cmd", "bash")
+    session_id = str(uuid.uuid4())
+    # Create a PTY and fork a process.
+    pid, master_fd = pty.fork()
+    if pid == 0:
+        # Child process: execute the command.
+        os.execvp(cmd, [cmd])
+    else:
+        # Parent process: store the session.
+        session = InteractiveSession(session_id, master_fd, pid)
+        interactive_sessions[session_id] = session
+        return {"session_id": session_id}
+
+@app.get("/interactive/output/{session_id}")
+async def interactive_output(session_id: str):
+    session = interactive_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    out = await session.get_output()
+    return {"output": out}
+
+class InputPayload(BaseModel):
+    input: str
+
+@app.post("/interactive/input/{session_id}")
+async def interactive_input(session_id: str, payload: InputPayload):
+    session = interactive_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session.write_input(payload.input)
+    return {"status": "input sent"}
+
+@app.post("/interactive/kill/{session_id}")
+async def interactive_kill(session_id: str):
+    session = interactive_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session.kill()
+    del interactive_sessions[session_id]
+    return {"status": "session terminated"}
+
+# ------------------------------
+# Uvicorn Server and Main
+# ------------------------------
 def parse_args():
     parser = argparse.ArgumentParser(description="Shell Automation Agent")
     parser.add_argument("--no-confirm", action="store_true",
