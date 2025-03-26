@@ -163,6 +163,28 @@
           }
         }
       }
+    },
+    "/ws/terminal": {
+      "get": {
+        "operationId": "terminalSession",
+        "summary": "Establish an interactive terminal session",
+        "description": "Opens a WebSocket connection that provides a full interactive TTY session. Use this endpoint for commands that require interactivity (e.g. a shell inside a container or VM).",
+        "parameters": [
+          {
+            "name": "cmd",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "The command to run interactively (default is 'bash')"
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols. An interactive TTY session has been established."
+          }
+        },
+        "x-websocket": true
+      }
     }
   }
 }
