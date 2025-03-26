@@ -94,8 +94,9 @@ pip install -r requirements.txt
 #### 3. Start the shell agent
 
 ```
-source venv/bin/activate
-uvicorn shell_agent:app --host 0.0.0.0 --port 11000
+python3 shell_agent.py
+or
+python3 shell_agent.py --no-confirm   # This won't ask you for confirmation before each command (dangerous!) 
 
 ```
 
