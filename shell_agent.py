@@ -24,13 +24,13 @@ async def run_command(payload: ShellCommand):
     cmd = payload.command.strip()
     stdin_input = payload.stdin
 
-    print(f"\n🟡 [RUN] Received command:\n{cmd}")
+    print(f"\n[RUN] Received command:\n{cmd}")
 
     if require_confirmation:
-        print("❓ Confirm execution? [Y/n] ", end="")
+        print("Confirm execution? [Y/n] ", end="")
         answer = sys.stdin.readline().strip().lower()
         if answer and answer != "y":
-            print("🚫 Command declined by user.")
+            print("Command declined by user.")
             return {
                 "stdout": "",
                 "stderr": "Command execution declined by user.",
@@ -63,8 +63,8 @@ async def run_command(payload: ShellCommand):
                 collector.append(decoded)
 
         await asyncio.gather(
-            read_stream(process.stdout, stdout_data, "▶️ STDOUT"),
-            read_stream(process.stderr, stderr_data, "⚠️ STDERR"),
+            read_stream(process.stdout, stdout_data, "STDOUT"),
+            read_stream(process.stderr, stderr_data, "STDERR"),
         )
 
         exit_code = await process.wait()
@@ -93,13 +93,13 @@ async def start_command(payload: ShellCommand):
     stdout_buffer = []
     stderr_buffer = []
 
-    print(f"\n🟢 [START] Launching background process:\n{cmd}\n🆔 ID: {proc_id}")
+    print(f"\n[START] Launching background process:\n{cmd}\n🆔 ID: {proc_id}")
 
     if require_confirmation:
-        print("❓ Confirm background execution? [Y/n] ", end="")
+        print("Confirm background execution? [Y/n] ", end="")
         answer = sys.stdin.readline().strip().lower()
         if answer and answer != "y":
-            print("🚫 Background process declined by user.")
+            print("Background process declined by user.")
             return {
                 "error": "Execution declined"
             }
