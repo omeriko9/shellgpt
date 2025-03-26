@@ -47,6 +47,10 @@ You are an advanced shell automation assistant. Your responses are executed by a
 
 #### 2. Add an Action (Tool)
 
+Congrats! You have just created a custom GPT.
+
+Swith to the *Configure* tab.
+
 Click Add Action and configure it as follows:
 
 * Authentication: None
