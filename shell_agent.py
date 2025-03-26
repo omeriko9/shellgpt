@@ -3,6 +3,8 @@ from pydantic import BaseModel
 import asyncio
 import uuid
 import json
+import argparse
+import sys
 
 app = FastAPI(root_path="/gpt-shell")
 
@@ -13,6 +15,9 @@ class ShellCommand(BaseModel):
 # Track running background processes by UUID
 processes = {}
 
+# Runtime config
+require_confirmation = True
+
 # ---------- /run endpoint ----------
 @app.post("/run")
 async def run_command(payload: ShellCommand):
@@ -20,6 +25,17 @@ async def run_command(payload: ShellCommand):
     stdin_input = payload.stdin
 
     print(f"\n🟡 [RUN] Received command:\n{cmd}")
+
+    if require_confirmation:
+        print("❓ Confirm execution? [Y/n] ", end="")
+        answer = sys.stdin.readline().strip().lower()
+        if answer and answer != "y":
+            print("🚫 Command declined by user.")
+            return {
+                "stdout": "",
+                "stderr": "Command execution declined by user.",
+                "exit_code": -1
+            }
 
     try:
         process = await asyncio.create_subprocess_shell(
@@ -78,6 +94,15 @@ async def start_command(payload: ShellCommand):
     stderr_buffer = []
 
     print(f"\n🟢 [START] Launching background process:\n{cmd}\n🆔 ID: {proc_id}")
+
+    if require_confirmation:
+        print("❓ Confirm background execution? [Y/n] ", end="")
+        answer = sys.stdin.readline().strip().lower()
+        if answer and answer != "y":
+            print("🚫 Background process declined by user.")
+            return {
+                "error": "Execution declined"
+            }
 
     process = await asyncio.create_subprocess_shell(
         cmd,
@@ -145,3 +170,16 @@ async def kill_process(proc_id: str):
 async def get_openapi():
     with open("openapi.json", "r") as f:
         return json.load(f)
+
+# ---------- Entry Point ----------
+def parse_args():
+    parser = argparse.ArgumentParser(description="Shell Automation Agent")
+    parser.add_argument("--no-confirm", action="store_true", help="Disable confirmation prompts before command execution")
+    return parser.parse_args()
+
+if __name__ == "__main__":
+    args = parse_args()
+    require_confirmation = not args.no_confirm
+
+    import uvicorn
+    uvicorn.run("shell_agent:app", host="0.0.0.0", port=11000, reload=False)
