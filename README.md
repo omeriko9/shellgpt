@@ -1,6 +1,10 @@
 # shellgpt
 
 
+
+https://github.com/user-attachments/assets/5ebddc10-780d-4180-ade9-920e5a4db57a
+
+
 # 🧠 Shell Automation Assistant for ChatGPT
 
 This project enables full automation between ChatGPT (via a **Custom GPT** with tool access) and your local Linux shell. It allows ChatGPT to:
