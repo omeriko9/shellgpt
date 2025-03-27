@@ -111,6 +111,7 @@ class InteractiveSession:
         self._read_task.cancel()
 
     async def attach(self):
+        """Stop the background read loop, return master_fd for real-time attach."""
         self._read_task.cancel()
         return self.master_fd
 
@@ -152,6 +153,10 @@ async def run_in_pty(cmd: str):
                 try:
                     user_input = await session.prompt_async("")
                 except (EOFError, KeyboardInterrupt):
+                    stop_event.set()
+                    return
+                if user_input is None:
+                    # Possibly forcibly exited
                     stop_event.set()
                     return
                 if not user_input.endswith("\n"):
@@ -201,6 +206,9 @@ async def attach_local(session_id: str):
             except (EOFError, KeyboardInterrupt):
                 stop_event.set()
                 return
+            if user_input is None:
+                stop_event.set()
+                return
             if not user_input.endswith("\n"):
                 user_input += "\n"
             os.write(master_fd, user_input.encode())
@@ -216,48 +224,46 @@ async def attach_local(session_id: str):
     print(f"\n[sgpt] Detaching from session {session_id}.\n")
 
 # ------------------------------------------------------------------------------
-# 1) We run the main shell prompt in a loop
-# 2) We run a background task that waits for new confirmations
-#    and forcibly breaks the prompt with session.app.exit()
+# Interrupt-based real-time confirmations
 # ------------------------------------------------------------------------------
-
 async def handle_pending_confirmations():
     """
-    Runs in background. If a new item arrives, forcibly exit the current prompt
-    so that the main shell loop can handle the new item immediately.
+    Background task: new items from pending_confirmations interrupt the user's
+    main prompt by calling session.app.exit(). Then the main loop sees them.
     """
     while True:
         item = await pending_confirmations.get()
-        # We have a new item: forcibly exit the prompt so main loop can handle it
+        # forcibly exit the prompt so main loop can handle it
         if global_shell_session and global_shell_session.app:
-            # Force the current prompt to end (which returns control to main loop)
             global_shell_session.app.exit()
-        # Now store the item somewhere main loop can pick it up
-        # Easiest: put it in a global list for main loop to drain
+        # stash item in new_items for the main loop
         new_items.append(item)
 
-
-new_items = []  # A simple global list that the main loop checks
+new_items = []
 
 async def interactive_shell():
     global global_shell_session
     session = PromptSession()
     global_shell_session = session
 
-    # Start the background task
+    # Start background confirmations
     asyncio.create_task(handle_pending_confirmations())
 
     while True:
-        # 1) Drain newly arrived items first (they appear in new_items after the background task moves them)
+        # Drain new items (interrupt arrival)
         while new_items:
             item = new_items.pop(0)
             print(f"\n[sgpt] GPT wants to run:\n    {item.cmd}\n")
-            # Prompt user
             try:
                 answer = await session.prompt_async("Confirm execution? [Y/n] ")
             except (EOFError, KeyboardInterrupt):
                 item.future.set_result(False)
                 continue
+            if answer is None:
+                # forcibly exited, treat as no
+                item.future.set_result(False)
+                continue
+
             if answer.strip().lower() in ("y", ""):
                 print("[sgpt] Command confirmed.\n")
                 item.future.set_result(True)
@@ -265,7 +271,7 @@ async def interactive_shell():
                 print("[sgpt] Command declined.\n")
                 item.future.set_result(False)
 
-        # 2) Then do normal user prompt
+        # Normal user prompt
         try:
             user_input = await session.prompt_async(message=get_prompt())
         except (EOFError, KeyboardInterrupt):
@@ -273,6 +279,7 @@ async def interactive_shell():
             os._exit(0)
 
         if user_input is None:
+            # forcibly exited by background -> skip
             continue
 
         user_input = user_input.strip()
@@ -282,7 +289,7 @@ async def interactive_shell():
             print("Exiting SGPT shell.")
             os._exit(0)
 
-        # cd builtin
+        # local builtin cd
         if user_input.startswith("cd"):
             try:
                 parts = shlex.split(user_input)
@@ -295,7 +302,7 @@ async def interactive_shell():
                 print(f"cd: {e}")
             continue
 
-        # attach
+        # attach <session>
         if user_input.startswith("attach "):
             parts = user_input.split()
             if len(parts) == 2:
@@ -305,12 +312,13 @@ async def interactive_shell():
                 print("Usage: attach <session_id>")
             continue
 
+        # run in pty if interactive
         user_input = force_ls_color(user_input)
         if is_interactive(user_input):
             await run_in_pty(user_input)
             continue
 
-        # Non-interactive
+        # otherwise, normal
         try:
             process = await asyncio.create_subprocess_shell(
                 user_input,
@@ -333,12 +341,69 @@ async def interactive_shell():
             print(f"[sgpt] Error executing command: {e}")
 
 # ------------------------------------------------------------------------------
-# HTTP ENDPOINTS
+# HTTP: INTERACTIVE ENDPOINTS
 # ------------------------------------------------------------------------------
 class ShellCommand(BaseModel):
     command: str
     stdin: str = ""
 
+@app.post("/interactive/start")
+async def interactive_start(payload: dict):
+    """
+    Start an interactive session. JSON can have { "cmd": "...", ... }.
+    If no cmd, defaults to 'bash'.
+    """
+    raw_cmd = payload.get("cmd", "bash")
+    cmd_parts = shlex.split(raw_cmd)
+    if not cmd_parts:
+        cmd_parts = ["bash"]
+
+    session_id = str(uuid.uuid4())
+    pid, master_fd = pty.fork()
+    if pid == 0:
+        try:
+            os.execvp(cmd_parts[0], cmd_parts)
+        except Exception as e:
+            print(f"Failed to exec {cmd_parts}: {e}")
+            os._exit(1)
+    else:
+        session = InteractiveSession(session_id, master_fd, pid)
+        interactive_sessions[session_id] = session
+        print(f"[sgpt] Created interactive session {session_id} -> {raw_cmd}")
+        print(f"[sgpt] To attach locally, type: attach {session_id}")
+        return {"session_id": session_id}
+
+@app.get("/interactive/output/{session_id}")
+async def interactive_output(session_id: str):
+    if session_id not in interactive_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = interactive_sessions[session_id]
+    out = await session.get_output()
+    return {"output": out}
+
+class InputPayload(BaseModel):
+    input: str
+
+@app.post("/interactive/input/{session_id}")
+async def interactive_input(session_id: str, payload: InputPayload):
+    if session_id not in interactive_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = interactive_sessions[session_id]
+    session.write_input(payload.input)
+    return {"status": "input sent"}
+
+@app.post("/interactive/kill/{session_id}")
+async def interactive_kill(session_id: str):
+    if session_id not in interactive_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = interactive_sessions[session_id]
+    session.kill()
+    del interactive_sessions[session_id]
+    return {"status": f"session {session_id} terminated"}
+
+# ------------------------------------------------------------------------------
+# HTTP: NON-INTERACTIVE (/run, /start)
+# ------------------------------------------------------------------------------
 processes = {}
 
 @app.post("/run")
@@ -351,7 +416,7 @@ async def run_command(payload: ShellCommand):
             "exit_code": -1
         }
     cmd = force_ls_color(cmd)
-    # Enqueue a confirmation if needed
+
     if require_confirmation:
         item = ConfirmationItem(cmd, payload.dict(), "run")
         await pending_confirmations.put(item)
@@ -404,7 +469,6 @@ async def run_command(payload: ShellCommand):
         print(f"[sgpt] Exception during /run: {e}")
         print("\n" + get_prompt_text(), end='', flush=True)
         return {"stdout": "", "stderr": str(e), "exit_code": -1}
-
 
 @app.post("/start")
 async def start_command(payload: ShellCommand):
@@ -462,7 +526,6 @@ async def start_command(payload: ShellCommand):
         "stderr": stderr_buffer
     }
     return {"id": proc_id}
-
 
 @app.get("/output/{id}")
 async def get_output(id: str):
