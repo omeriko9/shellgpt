@@ -8,6 +8,7 @@ import uuid
 import json
 import argparse
 import shlex
+import traceback
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -25,6 +26,9 @@ global_shell_session = None
 COLOR_WHITE = "\033[97m"
 COLOR_RESET = "\033[0m"
 REMOTE_COLOR = "\033[38;2;223;155;255m"
+
+pending_local_attaches = asyncio.Queue()
+
 
 def get_prompt_text():
     user = getpass.getuser()
@@ -46,6 +50,18 @@ def is_interactive(cmd: str) -> bool:
     tokens = shlex.split(cmd)
     if not tokens:
         return False
+    if tokens[0] in {"bash", "sh"} and "-c" not in tokens:
+        return True
+    if tokens[0] == "sed":
+        return False
+    if any(flag in tokens for flag in ["-it", "-i", "-t"]):
+        return True
+    return False
+    if tokens[0] in {"bash", "sh"} and "-c" not in tokens:
+        return True
+    if any(flag in tokens for flag in ["-it", "-i", "-t"]):
+        return True
+    return False
     if tokens[0] in {"bash", "sh"}:
         return True
     if any(flag in tokens for flag in ["-it", "-i", "-t"]):
@@ -77,6 +93,7 @@ class InteractiveSession:
         self.output_buffer = ""
         self._lock = asyncio.Lock()
         self._read_task = asyncio.create_task(self._read_loop())
+        self.attach_writer = None
 
     async def _read_loop(self):
         loop = asyncio.get_event_loop()
@@ -84,10 +101,19 @@ class InteractiveSession:
             try:
                 data = await loop.run_in_executor(None, os.read, self.master_fd, 1024)
                 if not data:
+                    print(f"[interactive session {self.session_id}] EOF from PTY.")
                     break
-                async with self._lock:
-                    self.output_buffer += data.decode(errors="ignore")
+                decoded = data.decode(errors="ignore")
+                if self.attach_writer:
+                    try:
+                        self.attach_writer.write(decoded)
+                        self.attach_writer.flush()
+                    except Exception as e:
+                        print(f"[interactive session {self.session_id}] attach_writer error: {e}")
+                if self.attach_writer:
+                    self.output_buffer += decoded
             except Exception:
+                print(f"[interactive session {self.session_id}] read error: {e}")
                 break
 
     async def get_output(self) -> str:
@@ -111,7 +137,8 @@ class InteractiveSession:
         self._read_task.cancel()
 
     async def attach(self):
-        """Stop the background read loop, return master_fd for real-time attach."""
+        self.attach_writer = sys.stdout
+        return self.master_fd
         self._read_task.cancel()
         return self.master_fd
 
@@ -125,8 +152,10 @@ async def run_in_pty(cmd: str):
     if not cmd_parts:
         return
     pid, master_fd = pty.fork()
+    print(f"[sgpt] pty started with pid={pid}, master_fd={master_fd}")
     if pid == 0:
         try:
+            os.environ["TERM"] = "xterm-256color"
             os.execvp(cmd_parts[0], cmd_parts)
         except Exception as e:
             print(f"Error exec'ing {cmd_parts}: {e}")
@@ -141,6 +170,7 @@ async def run_in_pty(cmd: str):
                 try:
                     data = await loop.run_in_executor(None, os.read, master_fd, 1024)
                     if not data:
+                        print(f"[interactive session {self.session_id}] EOF from PTY.")
                         break
                     sys.stdout.write(data.decode(errors="ignore"))
                     sys.stdout.flush()
@@ -176,11 +206,14 @@ async def run_in_pty(cmd: str):
             pass
 
 async def attach_local(session_id: str):
+
+    print(f"[attach_local] attaching to {session_id}")
+
     if session_id not in interactive_sessions:
         print(f"No such session: {session_id}")
         return
-    session = interactive_sessions[session_id]
-    master_fd = await session.attach()
+    pty_session = interactive_sessions[session_id]
+    master_fd = await pty_session.attach()
     loop = asyncio.get_event_loop()
     local_session = global_shell_session
     stop_event = asyncio.Event()
@@ -192,10 +225,12 @@ async def attach_local(session_id: str):
             try:
                 data = await loop.run_in_executor(None, os.read, master_fd, 1024)
                 if not data:
+                    print(f"[attach_local] EOF received. Stopping read.")
                     break
                 sys.stdout.write(data.decode(errors="ignore"))
                 sys.stdout.flush()
-            except OSError:
+            except OSError as e:
+                print(f"[attach_local] OSError: {e}")
                 break
         stop_event.set()
 
@@ -204,24 +239,35 @@ async def attach_local(session_id: str):
             try:
                 user_input = await local_session.prompt_async("")
             except (EOFError, KeyboardInterrupt):
+                print("[attach_local] write_pty got interrupt")
                 stop_event.set()
                 return
             if user_input is None:
+                print("[attach_local] write_pty got None")
                 stop_event.set()
                 return
             if not user_input.endswith("\n"):
                 user_input += "\n"
             os.write(master_fd, user_input.encode())
+        print("[attach_local] write_pty exiting")
 
     tasks = [
         asyncio.create_task(read_pty()),
         asyncio.create_task(write_pty()),
     ]
-    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    await asyncio.wait(tasks, return_when=asyncio.ALL_COMPLETED)
     for t in tasks:
         t.cancel()
 
     print(f"\n[sgpt] Detaching from session {session_id}.\n")
+
+async def handle_pending_local_attaches():
+    while True:
+        sid = await pending_local_attaches.get()
+        print("auto attaching session...")
+        await attach_local(sid)
+
+
 
 # ------------------------------------------------------------------------------
 # Interrupt-based real-time confirmations
@@ -248,8 +294,10 @@ async def interactive_shell():
 
     # Start background confirmations
     asyncio.create_task(handle_pending_confirmations())
+    asyncio.create_task(handle_pending_local_attaches())
 
     while True:
+
         # Drain new items (interrupt arrival)
         while new_items:
             item = new_items.pop(0)
@@ -277,6 +325,10 @@ async def interactive_shell():
         except (EOFError, KeyboardInterrupt):
             print("Exiting SGPT shell.")
             os._exit(0)
+        except Exception as e:
+            print(f"[sgpt] Unexpected prompt error: {e}")
+            traceback.print_exc()
+            continue
 
         if user_input is None:
             # forcibly exited by background -> skip
@@ -285,9 +337,20 @@ async def interactive_shell():
         user_input = user_input.strip()
         if not user_input:
             continue
+
         if user_input.lower() == "exit":
             print("Exiting SGPT shell.")
             os._exit(0)
+
+        if user_input.lower() == "getsessions":
+            if not interactive_sessions:
+                print("[sgpt] No active sessions.")
+            else:
+                print("[sgpt] Active interactive sessions:")
+                for sid, sess in interactive_sessions.items():
+                    print(f"  - {sid} (pid={sess.pid})")
+            continue
+
 
         # local builtin cd
         if user_input.startswith("cd"):
@@ -347,6 +410,18 @@ class ShellCommand(BaseModel):
     command: str
     stdin: str = ""
 
+
+def normalize_command(cmd: str) -> str:
+    if cmd.startswith("sed "):
+        cmd = cmd.replace("-i ", "-i")
+    return cmd
+def needs_shell(cmd: str) -> bool:
+    # skip wrapping if already using sh -c or bash -c
+    if any(cmd.strip().startswith(p) for p in ["sh -c", "bash -c"]):
+        return False
+    return any(sym in cmd for sym in [">", "<", "|", ";", "*", "$", "&"])
+
+
 @app.post("/interactive/start")
 async def interactive_start(payload: dict):
     """
@@ -354,31 +429,44 @@ async def interactive_start(payload: dict):
     If no cmd, defaults to 'bash'.
     """
     raw_cmd = payload.get("cmd", "bash")
-    cmd_parts = shlex.split(raw_cmd)
+    if needs_shell(raw_cmd):
+        cmd_parts = ['sh', '-c', raw_cmd]
+    else:
+        cmd_parts = shlex.split(raw_cmd)
+
     if not cmd_parts:
         cmd_parts = ["bash"]
+
+    print(f"[DEBUG] Launching interactive session with: {cmd_parts}")
+    print(f"raw_cmd: {raw_cmd}")
+    print(f"dict[command]: {dict["command"]}")
+
 
     session_id = str(uuid.uuid4())
     pid, master_fd = pty.fork()
     if pid == 0:
         try:
+            os.environ["TERM"] = "xterm-256color"
+            print(f"[child] Starting: {cmd_parts}")
+            sys.stdout.flush()
             os.execvp(cmd_parts[0], cmd_parts)
         except Exception as e:
-            print(f"Failed to exec {cmd_parts}: {e}")
+            print(f"[child] execvp failed: {e}")
             os._exit(1)
     else:
         session = InteractiveSession(session_id, master_fd, pid)
         interactive_sessions[session_id] = session
         print(f"[sgpt] Created interactive session {session_id} -> {raw_cmd}")
         print(f"[sgpt] To attach locally, type: attach {session_id}")
+        await pending_local_attaches.put(session_id)
         return {"session_id": session_id}
 
 @app.get("/interactive/output/{session_id}")
 async def interactive_output(session_id: str):
     if session_id not in interactive_sessions:
         raise HTTPException(status_code=404, detail="Session not found")
-    session = interactive_sessions[session_id]
-    out = await session.get_output()
+    pty_session = interactive_sessions[session_id]
+    out = await pty_session.get_output()
     return {"output": out}
 
 class InputPayload(BaseModel):
@@ -443,6 +531,8 @@ async def run_command(payload: ShellCommand):
 
         stdout_data = []
         stderr_data = []
+
+        global_shell_session.history.append_string(cmd)
 
         async def read_stream(stream, collector):
             while True:
